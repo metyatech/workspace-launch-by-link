@@ -1,16 +1,18 @@
 {
     "compilerOptions": {
-        "module": "commonjs",
-        "target": "es2020",
+        "module": "NodeNext",
+        "moduleResolution": "NodeNext",
+        "target": "ES2022",
         "outDir": "out",
         "lib": [
-            "es2020"
+            "ES2022"
         ],
         "sourceMap": true,
         "rootDir": "src",
         "strict": true,
         "esModuleInterop": true,
-        "skipLibCheck": true
+        "skipLibCheck": true,
+        "resolveJsonModule": true
     },
     "include": [
         "src"

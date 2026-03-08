@@ -7,7 +7,7 @@ on:
     branches: [main]
 
 jobs:
-  build:
+  verify:
     runs-on: ubuntu-latest
 
     steps:
@@ -22,8 +22,5 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
-      - name: Lint
-        run: npm run lint
-
-      - name: Compile
-        run: npm run compile
+      - name: Verify
+        run: npm run verify

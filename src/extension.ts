@@ -2,12 +2,7 @@ import * as vscode from 'vscode';
 import fetch from 'cross-fetch';
 import { isBinaryFile } from 'isbinaryfile';
 import * as path from 'path';
-import * as fs from 'fs';
-
-// Lightweight logging helper
-const log = (ctx: vscode.ExtensionContext, ...args: any[]) => {
-    console.log('[WorkspaceLaunchByLink]', ...args);
-};
+import os from 'os';
 
 // Types
 type ManifestEntry = {
@@ -32,7 +27,7 @@ class RetryQueue {
     private running = false;
     private errorItem?: vscode.StatusBarItem;
 
-    constructor(private ctx: vscode.ExtensionContext) { }
+    constructor(private ctx: vscode.ExtensionContext) {}
 
     enqueue(task: () => Promise<void>) {
         this.queue.push(task);
@@ -40,19 +35,22 @@ class RetryQueue {
     }
 
     private async run() {
-        if (this.running) return;
+        if (this.running) {
+            return;
+        }
         this.running = true;
         try {
             while (this.queue.length) {
                 const task = this.queue.shift()!;
                 let delay = 1000; // start 1s, max 30s
-                for (; ;) {
+                for (;;) {
                     try {
                         await task();
                         await this.clearError();
                         break;
-                    } catch (err: any) {
-                        await this.showError(`送信失敗。再試行します: ${err?.message ?? err}`);
+                    } catch (err: unknown) {
+                        const msg = err instanceof Error ? err.message : String(err);
+                        await this.showError(`送信失敗。再試行します: ${msg}`);
                         await new Promise((r) => setTimeout(r, delay));
                         delay = Math.min(delay * 2, 30000);
                     }
@@ -65,7 +63,10 @@ class RetryQueue {
 
     private async showError(message: string) {
         if (!this.errorItem) {
-            this.errorItem = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Left, 10000);
+            this.errorItem = vscode.window.createStatusBarItem(
+                vscode.StatusBarAlignment.Left,
+                10000,
+            );
             this.errorItem.text = '$(error) Workspace Launch by Link Error';
             this.errorItem.tooltip = message;
             this.errorItem.show();
@@ -86,7 +87,9 @@ class RetryQueue {
 async function ensureDir(dir: vscode.Uri) {
     try {
         await vscode.workspace.fs.createDirectory(dir);
-    } catch { }
+    } catch {
+        // ignore
+    }
 }
 
 async function writeFileFromBase64(target: vscode.Uri, base64: string) {
@@ -98,9 +101,7 @@ async function cleanupOldSessions(baseRoot: vscode.Uri) {
     try {
         const openFolders = (vscode.workspace.workspaceFolders || []).map((wf) => wf.uri.fsPath);
         const preserve = new Set(
-            openFolders
-                .filter((p) => p.startsWith(baseRoot.fsPath + path.sep))
-                .map((p) => p)
+            openFolders.filter((p) => p.startsWith(baseRoot.fsPath + path.sep)).map((p) => p),
         );
         let entries: [string, vscode.FileType][] = [];
         try {
@@ -111,7 +112,9 @@ async function cleanupOldSessions(baseRoot: vscode.Uri) {
         }
         for (const [name] of entries) {
             const child = vscode.Uri.joinPath(baseRoot, name);
-            if (preserve.has(child.fsPath)) continue;
+            if (preserve.has(child.fsPath)) {
+                continue;
+            }
             try {
                 await vscode.workspace.fs.delete(child, { recursive: true, useTrash: false });
             } catch (e) {
@@ -123,19 +126,31 @@ async function cleanupOldSessions(baseRoot: vscode.Uri) {
     }
 }
 
-async function downloadAndMaterializeWorkspace(serverUrl: string, payload: StartPayload): Promise<vscode.Uri> {
+async function downloadAndMaterializeWorkspace(
+    serverUrl: string,
+    payload: StartPayload,
+): Promise<vscode.Uri> {
     // GET serverUrl + '/manifest' with payload as query
     const url = new URL(serverUrl);
     url.pathname = '/manifest';
-    if (payload.ownerId) url.searchParams.set('ownerId', payload.ownerId);
-    if (payload.workspaceId) url.searchParams.set('workspaceId', payload.workspaceId);
+    if (payload.ownerId) {
+        url.searchParams.set('ownerId', payload.ownerId);
+    }
+    if (payload.workspaceId) {
+        url.searchParams.set('workspaceId', payload.workspaceId);
+    }
 
     const res = await fetch(url.toString());
-    if (!res.ok) throw new Error(`manifest fetch failed: ${res.status}`);
+    if (!res.ok) {
+        throw new Error(`manifest fetch failed: ${res.status}`);
+    }
     const manifest: ManifestEntry[] = await res.json();
 
     // Create a temp workspace folder (cleanup old sessions first)
-    const sessionsRoot = vscode.Uri.joinPath(vscode.Uri.file(require('os').tmpdir()), 'workspace-launch-by-link');
+    const sessionsRoot = vscode.Uri.joinPath(
+        vscode.Uri.file(os.tmpdir()),
+        'workspace-launch-by-link',
+    );
     await ensureDir(sessionsRoot);
     await cleanupOldSessions(sessionsRoot);
     const unique = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
@@ -159,15 +174,18 @@ async function downloadAndMaterializeWorkspace(serverUrl: string, payload: Start
     const vscodeDir = vscode.Uri.joinPath(workspaceRoot, '.vscode');
     await ensureDir(vscodeDir);
     const markerUri = vscode.Uri.joinPath(vscodeDir, 'workspace-launch-by-link.json');
-    await vscode.workspace.fs.writeFile(markerUri, Buffer.from(JSON.stringify(config, null, 2), 'utf8'));
+    await vscode.workspace.fs.writeFile(
+        markerUri,
+        Buffer.from(JSON.stringify(config, null, 2), 'utf8'),
+    );
 
     // 1) VS Code Explorer: files.exclude に設定（失敗しても続行）
     try {
         const settingsUri = vscode.Uri.joinPath(vscodeDir, 'settings.json');
-        let settings: any = {};
+        let settings: Record<string, unknown> = {};
         try {
             const bytes = await vscode.workspace.fs.readFile(settingsUri);
-            settings = JSON.parse(Buffer.from(bytes).toString('utf8'));
+            settings = JSON.parse(Buffer.from(bytes).toString('utf8')) as Record<string, unknown>;
         } catch {
             settings = {};
         }
@@ -175,7 +193,10 @@ async function downloadAndMaterializeWorkspace(serverUrl: string, payload: Start
             ...(settings['files.exclude'] || {}),
             '**/.vscode': true,
         };
-        await vscode.workspace.fs.writeFile(settingsUri, Buffer.from(JSON.stringify(settings, null, 2), 'utf8'));
+        await vscode.workspace.fs.writeFile(
+            settingsUri,
+            Buffer.from(JSON.stringify(settings, null, 2), 'utf8'),
+        );
     } catch (e) {
         console.error('Failed to update files.exclude for marker hiding:', e);
     }
@@ -187,7 +208,9 @@ function parseInvokeUri(uri: vscode.Uri): SyncConfig {
     // vscode://publisher.extension/start?server=https://..&ownerId=..&workspaceId=..
     const params = new URLSearchParams(uri.query);
     const server = params.get('server');
-    if (!server) throw new Error('server パラメータが必要です');
+    if (!server) {
+        throw new Error('server パラメータが必要です');
+    }
     const payload: StartPayload = {
         ownerId: params.get('ownerId') || undefined,
         workspaceId: params.get('workspaceId') || undefined,
@@ -207,7 +230,10 @@ export async function activate(context: vscode.ExtensionContext) {
         // if no workspace open or not the marker, materialize then open
         const root = await downloadAndMaterializeWorkspace(config.serverUrl, config.payload || {});
         // open folder in current window (reuse if possible)
-        await vscode.commands.executeCommand('vscode.openFolder', root, { forceNewWindow: false, forceReuseWindow: true });
+        await vscode.commands.executeCommand('vscode.openFolder', root, {
+            forceNewWindow: false,
+            forceReuseWindow: true,
+        });
     }
 
     // URI handler
@@ -216,8 +242,9 @@ export async function activate(context: vscode.ExtensionContext) {
             try {
                 const cfg = parseInvokeUri(uri);
                 await startSync(cfg);
-            } catch (err: any) {
-                vscode.window.showErrorMessage(`Workspace Launch by Link 起動エラー: ${err?.message ?? err}`);
+            } catch (err: unknown) {
+                const msg = err instanceof Error ? err.message : String(err);
+                vscode.window.showErrorMessage(`Workspace Launch by Link 起動エラー: ${msg}`);
             }
         },
     };
@@ -227,14 +254,18 @@ export async function activate(context: vscode.ExtensionContext) {
     context.subscriptions.push(
         vscode.commands.registerCommand('workspaceLaunchByLink.showStatus', () => {
             vscode.window.showInformationMessage('Workspace Launch by Link は有効です。');
-        })
+        }),
     );
 
     // Auto start when marker file exists in workspace
     const wsFolders = vscode.workspace.workspaceFolders;
     if (wsFolders) {
         for (const folder of wsFolders) {
-            const marker = vscode.Uri.joinPath(folder.uri, '.vscode', 'workspace-launch-by-link.json');
+            const marker = vscode.Uri.joinPath(
+                folder.uri,
+                '.vscode',
+                'workspace-launch-by-link.json',
+            );
             try {
                 const data = await vscode.workspace.fs.readFile(marker);
                 const cfg: SyncConfig = JSON.parse(Buffer.from(data).toString('utf8'));
@@ -251,24 +282,26 @@ async function beginWatchAndSync(
     cfg: SyncConfig,
     queue: RetryQueue,
     root: vscode.Uri,
-    status: vscode.StatusBarItem
+    status: vscode.StatusBarItem,
 ) {
     status.text = '$(sync~spin) Workspace Launch by Link: running';
 
     const basePayload: StartPayload | undefined = cfg.payload
         ? {
-            ownerId: cfg.payload.ownerId,
-            workspaceId: cfg.payload.workspaceId,
-        }
+              ownerId: cfg.payload.ownerId,
+              workspaceId: cfg.payload.workspaceId,
+          }
         : undefined;
 
-    const postJson = async (path: string, body: any) => {
+    const postJson = async (path: string, body: object) => {
         await fetch(new URL(path, cfg.serverUrl).toString(), {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ ...body, ...basePayload }),
         }).then((r) => {
-            if (!r.ok) throw new Error(`HTTP ${r.status}`);
+            if (!r.ok) {
+                throw new Error(`HTTP ${r.status}`);
+            }
         });
     };
 
@@ -303,13 +336,17 @@ async function beginWatchAndSync(
 
     try {
         const all = await collectAllFiles(root);
-        for (const f of all) await sendFileSnapshot(f);
+        for (const f of all) {
+            await sendFileSnapshot(f);
+        }
     } catch (e) {
         console.error(e);
     }
 
     // Watchers
-    const watcher = vscode.workspace.createFileSystemWatcher(new vscode.RelativePattern(root, '**/*'));
+    const watcher = vscode.workspace.createFileSystemWatcher(
+        new vscode.RelativePattern(root, '**/*'),
+    );
     context.subscriptions.push(watcher);
 
     watcher.onDidCreate((uri) => {
@@ -318,9 +355,13 @@ async function beginWatchAndSync(
             try {
                 const stat = await vscode.workspace.fs.stat(uri);
                 if (stat.type & vscode.FileType.Directory) {
-                    queue.enqueue(() => postJson('/event/create', { path: rel, isDirectory: true }));
+                    queue.enqueue(() =>
+                        postJson('/event/create', { path: rel, isDirectory: true }),
+                    );
                 } else if (stat.type & vscode.FileType.File) {
-                    queue.enqueue(() => postJson('/event/create', { path: rel, isDirectory: false }));
+                    queue.enqueue(() =>
+                        postJson('/event/create', { path: rel, isDirectory: false }),
+                    );
                     queue.enqueue(() => sendFileSnapshot(uri));
                 }
             } catch {
@@ -354,9 +395,11 @@ async function beginWatchAndSync(
             for (const f of e.files) {
                 const oldRel = path.relative(root.fsPath, f.oldUri.fsPath).replace(/\\/g, '/');
                 const newRel = path.relative(root.fsPath, f.newUri.fsPath).replace(/\\/g, '/');
-                queue.enqueue(() => postJson('/event/rename', { oldPath: oldRel, newPath: newRel }));
+                queue.enqueue(() =>
+                    postJson('/event/rename', { oldPath: oldRel, newPath: newRel }),
+                );
             }
-        })
+        }),
     );
 
     // Text document change (debounced per doc)
@@ -364,21 +407,26 @@ async function beginWatchAndSync(
     context.subscriptions.push(
         vscode.workspace.onDidChangeTextDocument((e) => {
             const uri = e.document.uri;
-            if (uri.scheme !== 'file' || !uri.fsPath.startsWith(root.fsPath)) return;
+            if (uri.scheme !== 'file' || !uri.fsPath.startsWith(root.fsPath)) {
+                return;
+            }
             const key = uri.toString();
-            if (pendingTimers.has(key)) clearTimeout(pendingTimers.get(key)!);
+            const existing = pendingTimers.get(key);
+            if (existing) {
+                clearTimeout(existing);
+            }
             pendingTimers.set(
                 key,
                 setTimeout(async () => {
                     pendingTimers.delete(key);
                     try {
                         await sendFileSnapshot(uri);
-                    } catch (err) {
+                    } catch {
                         // snapshot is already enqueued with retry
                     }
-                }, 500)
+                }, 500),
             );
-        })
+        }),
     );
 
     // Heartbeat
@@ -388,4 +436,4 @@ async function beginWatchAndSync(
     context.subscriptions.push({ dispose: () => clearInterval(hb) });
 }
 
-export function deactivate() { }
+export function deactivate() {}

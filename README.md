@@ -41,10 +41,16 @@ vscode://Kodai-Yamamoto-SIW.workspace-launch-by-link/start?server=https%3A%2F%2F
 
 ## 開発
 
-- ビルド: `npm run compile`
-- パッケージ: `npm run package`
+### スクリプト
 
-## ローカル動作テスト手順
+- `npm run compile`: TypeScript のコンパイル
+- `npm run lint`: ESLint によるコードチェック
+- `npm run format`: Prettier によるコード整形
+- `npm run test`: Vitest によるテスト実行
+- `npm run verify`: Lint, Format, Compile, Test を一括実行（推奨）
+- `npm run package`: `vsce` によるパッケージ作成
+
+### ローカル動作テスト手順
 
 1. 依存インストールとビルド
   - `npm install`
@@ -63,3 +69,7 @@ vscode://Kodai-Yamamoto-SIW.workspace-launch-by-link/start?server=https%3A%2F%2F
   - `http://localhost:8787/_events` でも確認できます
 
 注意: 送信に失敗した場合、左下ステータスバーにエラー表示が出ます。サーバー復帰後は自動で成功し、表示は消えます。
+
+## ライセンス
+
+[MIT](LICENSE)
